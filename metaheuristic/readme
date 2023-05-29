@@ -1,0 +1,1 @@
+This is more or less functioning Tabu Search, which is based on the output of greedy algorithm and graph structure, so the 'tabuSearch.cpp' needs 'AdjacencyList.txt' and 'Colored.txt'. Additionally the comment part of the code is not fully made and is not well thought.
