@@ -1,1 +1,7 @@
-This is more or less functioning Tabu Search, which is based on the output of greedy algorithm and graph structure, so the 'tabuSearch.cpp' needs 'AdjacencyList.txt' and 'Colored.txt'. Additionally the comment part of the code is not fully made and is not well thought.
+This is more or less functioning Tabu Search, which is based on the output of Greedy Algorithm and graph structure, so the 'tabuSearch.cpp' needs 'AdjacencyList.txt' and 'Colored.txt'. 
+Additionally the comment part of the code is not fully made and is not well thought.
+There is code to generate random graph with X vertices and Y% of density, where X and Y are easily accessed by define statement.
+The first argument in 'AdjacencyList.txt' is amount of vertices and later are individual edges.
+'Colored.txt' first argument is like for 'AdjacencyList.txt' the amount of vertices and later are number of vertex followed by his colour, the last number means the least colours needed to colour the graph with Greedy Algorithm.
+The 'TabuSearch.txt' contains colours assignments for vertices.
+Tabu Search returns number of least colour needed it found for graph in console as well as the one gotten from 'Colored.txt'.
