@@ -12,10 +12,18 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
+
+//#define PROTOTYPE_CHECK_ACTIVITY 1
 
 #define PORT 1234
 #define MAX_SIZE_PER_ROOM 2
-#define BUF_SIZE 4096
+#define BUF_SIZE_TCP 32768
+#define BUF_SIZE_UDP 2<<13
+#define SECONDS_TO_WAIT 5
+#define POSSIBLE_ATTEMPTS 4
+#define END_PACKAGE_CHARACTER '\n'
+#define SERVER_FREQUENCY 0.1
 
 unsigned int cCount = 0;
 //int uid = 10;
@@ -28,11 +36,11 @@ struct Cln{
 };struct Cln *clnArray[MAX_SIZE_PER_ROOM] = {};
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void answer(void* buf, int rc){
+void answer(struct Cln *cln,void* buf, int rc){
     pthread_mutex_lock(&mutex);
     
     for(int i = 0; i < MAX_SIZE_PER_ROOM; i++){
-        if(!clnArray[i])
+        if(!clnArray[i] || clnArray[i] == cln)
             continue;
 
         int wr = 0;
@@ -50,11 +58,7 @@ void addNewClient(struct Cln *cln){
         if(clnArray[i])
             continue;
 
-        //clnArray[i] = malloc(sizeof(struct Cln));
         clnArray[i] = cln;
-        //char buf[2];
-        //sprintf(buf, "%d", i);
-        //write(cln->cfd, buf, sizeof(buf));
         break;
     }
     
@@ -75,14 +79,17 @@ void removeClient(struct Cln *cln){
     pthread_mutex_unlock(&mutex);
 }
 
-int connectionCheck(struct Cln *cln, void *buf, char *replyMessage, int replySize, int bytesAviable, int retryCount){
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+int connectionCheck(struct Cln *cln, void *buf, char *replyMessage, int replySize, int bytesAviable, int retryCount, int *bytesDeleted){
     int i = 1, rc = 0;
     char *testMessage;
+    *bytesDeleted = 0;
 
     for(i; i <= replySize; i++){
         do{
-            rc += read(cln->cfd, buf + rc, replySize * i - rc);
-        }while(rc < replySize * i);
+            rc += read(cln->cfd, buf + rc, replySize - rc);
+        }while(rc < replySize);
+        *bytesDeleted += rc;
 
         memcpy(testMessage, buf, replySize);
 
@@ -90,57 +97,128 @@ int connectionCheck(struct Cln *cln, void *buf, char *replyMessage, int replySiz
             break;
         }
         rc = 0;
-    }
+    } *bytesDeleted -= rc;
 
     return rc;
 }
+#endif
 
 void *cHandle(void *arg){
     struct Cln *cln = (struct Cln*) arg;
+    void *buf = malloc(BUF_SIZE_TCP);
+    
+    char end;
+    int rc;
+    unsigned int bytesAviable;
 
-    void *buf = malloc(BUF_SIZE);
-    char *conncectionTestMessage = "test", end;
-    int rc, bytesAviable, retryCount, replySize = strlen(conncectionTestMessage);
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+    char *conncectionTestMessage = "test";
+    int retryCount, replySize = strlen(conncectionTestMessage);
+    unsigned int bytesDeleted;
+
+    struct timeval beginTime, endTime;
+    double elapsedTime;
+#endif
 
     addNewClient(cln);
     cCount++;
 
     while(1){
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+        ettimeofday(&beginTime, 0);
         retryCount = 0;
-        do{
-            retryCount++;
-            write(cln->cfd, conncectionTestMessage, replySize);
-            sleep(2);
-            ioctl(cln->cfd, FIONREAD, &bytesAviable);
-        }while(bytesAviable < replySize && retryCount < 40);
+#endif
 
-        if(bytesAviable < replySize){
+        while(1){
+            ioctl(cln->cfd, FIONREAD, &bytesAviable);
+
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+            if(bytesAviable > 0){
+                break;
+            }
+#endif
+
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+            if(bytesAviable > 0 || retryCount >= POSSIBLE_ATTEMPTS){
+                break;
+            }
+            
+
+            gettimeofday(&endTime, 0);
+            elapsedTime = endTime.tv_sec - beginTime.tv_sec;
+
+            
+            if(elapsedTime >= SECONDS_TO_WAIT){
+                retryCount++;
+                write(cln->cfd, conncectionTestMessage, replySize);
+            }
+#endif
+            sleep(SERVER_FREQUENCY);
+        }
+
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+        if(bytesAviable == 0 && retryCount >= POSSIBLE_ATTEMPTS){
             removeClient(cln);
             break;
         }
-        
-        rc = connectionCheck(cln, buf, conncectionTestMessage, replySize, bytesAviable, retryCount);
-        if(rc == 0) {
-            //informacja zwrotna od klienta, bez wiadomosci
+
+        if(bytesAviable < replySize){
             continue;
         }
-
-        answer(buf, rc);
-        while(end != '\n' || rc <= 0){
-            rc += read(cln->cfd, buf + rc, BUF_SIZE - rc);
-            //write(1, buf, sizeof(buf));
-            answer(buf, rc);
-            end = ((char*)buf)[rc-1];
+        
+        if(retryCount == 0){
+            rc = 0;
+        } else {
+            rc = connectionCheck(cln, buf, conncectionTestMessage, replySize, bytesAviable, retryCount, &bytesDeleted);
+            if(rc == 0) { //informacja zwrotna od klienta, bez wiadomosci
+                continue;
+            }
         }
-        
-        
-    }close(cln->cfd);
-    free(cln);
+#endif
+
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+        rc = 0;
+#endif
+        while(1){
+            rc += read(cln->cfd, buf + rc, BUF_SIZE_TCP - rc);
+            //write(1, buf, sizeof(buf));
+            end = ((char*)buf)[rc-1];
+
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+            if(rc == BUF_SIZE_TCP){
+                answer(cln, buf, rc);
+                rc = 0;
+                bytesAviable -= rc;
+            }
+
+            if (rc >= bytesAviable){
+                if(rc != BUF_SIZE_TCP){
+                    answer(cln, buf, rc);
+                }
+                break;
+            }
+#endif
+            
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+            if(rc == BUF_SIZE_TCP || rc == bytesAviable - bytesDeleted){
+                answer(cln, buf, rc);
+                rc = 0;
+            }
+
+            
+            if (end == END_PACKAGE_CHARACTER || rc == bytesAviable - bytesDeleted)
+            {
+                break;
+            }
+#endif
+        } 
+    }
+    close(cln->cfd); free(cln); free(buf);
     cCount--;
     pthread_detach(pthread_self());
 }
 
-int main(int argc, char** argv){
+void serverTCP(){
     pthread_t pThread;
     int sfd, cfd, on = 1;
     struct sockaddr_in saddr, caddr;
@@ -182,5 +260,32 @@ int main(int argc, char** argv){
 
     }close(sfd);
     free(clnArray);
+}
+
+void serverUDP(){
+    int fd, rc;
+    socklen_t sl;
+    void *buf = malloc(BUF_SIZE_TCP);
+    struct sockaddr_in sa, ca;
+
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = INADDR_ANY;
+    sa.sin_port = htons(1234);
+    fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    bind(fd, (struct sockaddr*)&sa, sizeof(sa));
+    while(1) {
+    sl = sizeof(ca);
+    rc = recvfrom(fd, buf, sizeof(buf), 0,
+    (struct sockaddr*)&ca, &sl);
+    write(1, buf, rc);
+    
+    sendto(fd, buf, rc, 0, (struct sockaddr*)&ca, sl);
+    }
+}
+
+int main(int argc, char** argv){
+
+        serverTCP();
+    
     return EXIT_SUCCESS;
 }
