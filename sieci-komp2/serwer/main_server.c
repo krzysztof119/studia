@@ -22,6 +22,7 @@
 #define BUF_SIZE_UDP 2<<13
 #define SECONDS_TO_WAIT 5
 #define POSSIBLE_ATTEMPTS 4
+#define CONNECTION_TEST_MESSAGE (char*)"test"
 #define END_PACKAGE_CHARACTER '\n'
 #define SERVER_FREQUENCY 0.1
 
@@ -80,7 +81,7 @@ void removeClient(struct Cln *cln){
 }
 
 #if defined(PROTOTYPE_CHECK_ACTIVITY)
-int connectionCheck(struct Cln *cln, void *buf, char *replyMessage, int replySize, int bytesAviable, int retryCount, int *bytesDeleted){
+int connectionCheck(struct Cln *cln, void *buf, int replySize, int bytesAviable, int retryCount, int *bytesDeleted){
     int i = 1, rc = 0;
     char *testMessage;
     *bytesDeleted = 0;
@@ -93,7 +94,7 @@ int connectionCheck(struct Cln *cln, void *buf, char *replyMessage, int replySiz
 
         memcpy(testMessage, buf, replySize);
 
-        if(bytesAviable - replySize * i < replySize * (i+1) || strcmp(testMessage, replyMessage) != 0){
+        if(bytesAviable - replySize * i < replySize * (i+1) || strcmp(testMessage, CONNECTION_TEST_MESSAGE) != 0){
             break;
         }
         rc = 0;
@@ -112,8 +113,7 @@ void *cHandle(void *arg){
     unsigned int bytesAviable;
 
 #if defined(PROTOTYPE_CHECK_ACTIVITY)
-    char *conncectionTestMessage = "test";
-    int retryCount, replySize = strlen(conncectionTestMessage);
+    int retryCount, replySize = strlen(CONNECTION_TEST_MESSAGE);
     unsigned int bytesDeleted;
 
     struct timeval beginTime, endTime;
@@ -150,7 +150,7 @@ void *cHandle(void *arg){
             
             if(elapsedTime >= SECONDS_TO_WAIT){
                 retryCount++;
-                write(cln->cfd, conncectionTestMessage, replySize);
+                (void) !write(cln->cfd, CONNECTION_TEST_MESSAGE, replySize);
             }
 #endif
             sleep(SERVER_FREQUENCY);
@@ -169,7 +169,7 @@ void *cHandle(void *arg){
         if(retryCount == 0){
             rc = 0;
         } else {
-            rc = connectionCheck(cln, buf, conncectionTestMessage, replySize, bytesAviable, retryCount, &bytesDeleted);
+            rc = connectionCheck(cln, buf, replySize, bytesAviable, retryCount, &bytesDeleted);
             if(rc == 0) { //informacja zwrotna od klienta, bez wiadomosci
                 continue;
             }
@@ -181,17 +181,16 @@ void *cHandle(void *arg){
 #endif
         while(1){
             rc += read(cln->cfd, buf + rc, BUF_SIZE_TCP - rc);
-            //write(1, buf, sizeof(buf));
+            //(void) !write(1, buf, sizeof(buf));
             end = ((char*)buf)[rc-1];
 
 #if !defined(PROTOTYPE_CHECK_ACTIVITY)
             if(rc == BUF_SIZE_TCP){
                 answer(cln, buf, rc);
-                rc = 0;
-                bytesAviable -= rc;
+                break;
             }
 
-            if (rc >= bytesAviable){
+            if (rc >= bytesAviable || end == END_PACKAGE_CHARACTER){    
                 if(rc != BUF_SIZE_TCP){
                     answer(cln, buf, rc);
                 }
@@ -277,7 +276,7 @@ void serverUDP(){
     sl = sizeof(ca);
     rc = recvfrom(fd, buf, sizeof(buf), 0,
     (struct sockaddr*)&ca, &sl);
-    write(1, buf, rc);
+    (void) !write(1, buf, rc);
     
     sendto(fd, buf, rc, 0, (struct sockaddr*)&ca, sl);
     }
