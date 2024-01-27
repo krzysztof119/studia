@@ -16,12 +16,19 @@
 
 //#define PROTOTYPE_CHECK_ACTIVITY 1
 
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+    #define SECONDS_TO_WAIT 40
+#endif
+
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
+    #define SECONDS_TO_WAIT_PROTOTYPE 20
+    #define POSSIBLE_ATTEMPTS_PROTOTYPE 2
+#endif
+
 #define PORT 1234
-#define MAX_SIZE_PER_ROOM 2
+#define MAX_SIZE_PER_ROOM 4
 #define BUF_SIZE_TCP 32768
 #define BUF_SIZE_UDP 8192
-#define SECONDS_TO_WAIT 5
-#define POSSIBLE_ATTEMPTS 4
 #define CONNECTION_TEST_MESSAGE (char*)"test"
 #define END_PACKAGE_CHARACTER '\n'
 #define SERVER_FREQUENCY 0.1
@@ -34,21 +41,15 @@ void childend(int signo) {wait(NULL);}
 struct ClnTCP{
     int cfd;
     struct sockaddr_in caddr;
+    struct timeval beginTime;
 };struct ClnTCP *clnArrayTCP[MAX_SIZE_PER_ROOM] = {};
 pthread_mutex_t mutexTCP = PTHREAD_MUTEX_INITIALIZER;
-
-struct ClnUDP{
-    int fd;
-    socklen_t sl;
-    struct sockaddr_in ca;
-};
-pthread_mutex_t mutexUDP = PTHREAD_MUTEX_INITIALIZER;
 
 void answer(struct ClnTCP *clnTCP,void* buf, int rc){
     pthread_mutex_lock(&mutexTCP);
     
     for(int i = 0; i < MAX_SIZE_PER_ROOM; i++){
-        if(!clnArrayTCP[i] || clnArrayTCP[i] == clnTCP)
+        if(!clnArrayTCP[i])//|| clnArrayTCP[i] == clnTCP
             continue;
 
         int wr = 0;
@@ -120,20 +121,26 @@ void *cHandleTCP(void *arg){
     int rc;
     unsigned int bytesAviable;
 
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+    int disconnect = 0;
+
+#endif
+
 #if defined(PROTOTYPE_CHECK_ACTIVITY)
     int retryCount, replySize = strlen(CONNECTION_TEST_MESSAGE);
     unsigned int bytesDeleted;
+#endif
 
     struct timeval beginTime, endTime;
     double elapsedTime;
-#endif
 
     addNewClient(clnTCP);
     cCount++;
 
     while(1){
+        gettimeofday(&clnTCP->beginTime, 0);
+
 #if defined(PROTOTYPE_CHECK_ACTIVITY)
-        ettimeofday(&beginTime, 0);
         retryCount = 0;
 #endif
 
@@ -150,12 +157,19 @@ void *cHandleTCP(void *arg){
             if(bytesAviable > 0 || retryCount >= POSSIBLE_ATTEMPTS){
                 break;
             }
-            
+#endif            
 
             gettimeofday(&endTime, 0);
-            elapsedTime = endTime.tv_sec - beginTime.tv_sec;
+            elapsedTime = endTime.tv_sec - clnTCP->beginTime.tv_sec;
 
-            
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+            if(elapsedTime >= SECONDS_TO_WAIT){
+                disconnect = 1;
+                break;
+            }
+#endif
+
+#if defined(PROTOTYPE_CHECK_ACTIVITY)
             if(elapsedTime >= SECONDS_TO_WAIT){
                 retryCount++;
                 (void) !write(clnTCP->cfd, CONNECTION_TEST_MESSAGE, replySize);
@@ -163,6 +177,13 @@ void *cHandleTCP(void *arg){
 #endif
             sleep(SERVER_FREQUENCY);
         }
+
+#if !defined(PROTOTYPE_CHECK_ACTIVITY)
+            if(disconnect){
+                removeClient(clnTCP);
+                break;
+            }
+#endif
 
 #if defined(PROTOTYPE_CHECK_ACTIVITY)
         if(bytesAviable == 0 && retryCount >= POSSIBLE_ATTEMPTS){
@@ -257,7 +278,9 @@ void serverTCP(){
             close(cfd);
             continue;
         }
-        printf("Nowe poloczenie %d\n", cfd);
+
+        (void) !printf("Nowe poloczenie TCP: %d\n", cfd);
+        fflush(stdout);
 
         struct ClnTCP *clnTCP = (struct ClnTCP*) malloc(sizeof(struct ClnTCP));
         clnTCP->cfd = cfd;
@@ -269,55 +292,55 @@ void serverTCP(){
     free(clnArrayTCP);
 }
 
-void *cHandleUDP(void *arg){
-    struct ClnUDP *clnUDP = (struct ClnUDP*) arg;
-    int rc;
-    void *buf = malloc(BUF_SIZE_TCP);
-
-    rc = recvfrom(clnUDP->fd, buf, sizeof(buf), 0, (struct sockaddr*)&clnUDP->ca, &clnUDP->sl);
-    //(void) !write(1, buf, rc);
-    pthread_mutex_lock(&mutexUDP);
-
-    for(int i = 0; i < MAX_SIZE_PER_ROOM; i++){
-        if(!clnArrayTCP[i]) // && clnArrayTCP[i]->caddr.sin_port == clnUDP->ca.sin_port
-            continue;
-
-        int wr = 0;
-        while(wr < rc){
-            sendto(clnUDP->fd, buf, rc, 0, (struct sockaddr*)&clnUDP->ca, clnUDP->sl);
-        }
-    }
-    
-    pthread_mutex_lock(&mutexUDP);
-}
-
 void serverUDP(){
-    pthread_t pThread;
-    int fd;
+    int fd, rc;
     socklen_t sl;
-
-    signal(SIGCHLD, childend);
+    void *buf = malloc(BUF_SIZE_TCP);
 
     struct sockaddr_in sa, ca;
 
     sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = INADDR_ANY;
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
     sa.sin_port = htons(1235);
-    fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     bind(fd, (struct sockaddr*)&sa, sizeof(sa));
     while(1) {
+        int notAllowed = 1;
         sl = sizeof(ca);
 
-        //printf("Nowe poloczenie %d\n", fd);
+        rc = recvfrom(fd, buf, BUF_SIZE_UDP, 0, (struct sockaddr*)&ca, &sl);
+        if(rc <= 0){
+            continue;
+        }
+        
+        for(int i = 0; i < MAX_SIZE_PER_ROOM; i++){
+            if(!clnArrayTCP[i] || !clnArrayTCP[i]->caddr.sin_addr.s_addr == ca.sin_addr.s_addr){//|| clnArrayTCP[i] == clnTCP
+                continue;
+            }
+            gettimeofday(&clnArrayTCP[i]->beginTime, 0);
+            notAllowed = 0;
+        }
 
-        struct ClnUDP *clnUDP = (struct ClnUDP*) malloc(sizeof(struct ClnUDP));
-        clnUDP->fd = fd;
-        clnUDP->sl = sl;
-        clnUDP->ca = ca;
+        if(notAllowed){
+            continue;
+        }
+        
+        (void) !printf("Nowe poloczenie UDP: %d\n", fd);
+        fflush(stdout);
 
-        pthread_create(&pThread, NULL, &cHandleUDP, (void*) clnUDP);
-    
-    }
+        //(void) !write(1, buf, rc);
+
+        for(int i = 0; i < MAX_SIZE_PER_ROOM; i++){
+            if(!clnArrayTCP[i] || clnArrayTCP[i]->caddr.sin_addr.s_addr == ca.sin_addr.s_addr)//|| clnArrayTCP[i] == clnTCP
+                continue;
+
+            int wr = 0;
+            while(wr < rc){
+                wr += sendto(fd, buf, rc, 0, (struct sockaddr*)&clnArrayTCP[i]->caddr, sizeof(clnArrayTCP[i]->caddr));
+            }
+        }
+        
+    }close(fd);
 }
 
 int main(int argc, char** argv){
